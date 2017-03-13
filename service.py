@@ -50,9 +50,65 @@ class turkcealtyazi(sublib.service):
         if not self.num():
             self.find(self.item.title)
 
+    def checkpriority(self, txt):
+        # this is a very complicated and fuzzy string work
+        if self.item.episode < 0 or not self.item.show:
+            return False, 0
+        txt = txt.lower().replace(" ", "")
+        ispack = 0
+        packmatch = 0
+        epmatch = 0
+        skip = False
+        sb = re.search("s(.+?)\|e(.+)", txt)
+        if sb:
+            e = sb.group(2)
+            s = sb.group(1)
+            # verify season match first
+            if s.isdigit() and self.item.season > 0 and \
+                    not self.item.season == int(s):
+                return True, 0
+            ismultiple = False
+            # B: 1,2,3,4 ...
+            for m in e.split(","):
+                if m.strip().isdigit():
+                    ismultiple = True
+                else:
+                    ismultiple = False
+                    break
+            if ismultiple:
+                # check if in range
+                multiples = [int(x) for x in e.split(",")]
+                if self.item.episode in multiples:
+                    packmatch = 2
+                else:
+                    skip = True
+            # B: 1~4
+            if "~" in e:
+                startend = e.split("~")
+                # check if in range
+                if len(startend) == 2 and \
+                    startend[0].strip().isdigit() and \
+                        startend[1].strip().isdigit():
+                    if int(startend[0]) < self.item.episode and \
+                            int(startend[1]) > self.item.episode:
+                        packmatch = 2
+                    else:
+                        skip = True
+                else:
+                    ispack = 1
+            # B:1 or B:01
+            if e.isdigit():
+                if int(e) == self.item.episode:
+                    epmatch = 3
+                else:
+                    skip = True
+        # B: Paket meaning a package
+        elif "paket" in txt:
+            ispack = 1
+        return skip, ispack + epmatch + packmatch
+
     def scraperesults(self, page, query=None):
         match = re.findall('<a href="(.+?)" title="(.+?)"><span style="font-size:15px"><strong>.+?<span style="font-size:15px">\(([0-9]{4})\)', page)
-        print match
         for link, name, year in match:
             year = int(year)
             if norm(name) == norm(self.item.title) and \
@@ -70,15 +126,16 @@ class turkcealtyazi(sublib.service):
                     self.scraperesults(self.request(domain + "/find.php", query))
 
     def scrapepage(self, page):
-        print 222
         subs = re.findall('<div class="altsonsez1(.+?)</div>\s+?</div>\s+?<div>', page, re.DOTALL)
         for s in subs:
-            print 9999999999
             r_name = re.search('<a itemprop="url" class="underline".+?href="(.+?)".+?<strong>(.+?)<\/strong>', s)
             link = r_name.group(1)
             name = r_name.group(2)
             r_desc = re.search('<div class="alcd">(.+?)<\/div>', s, re.DOTALL)
             desc = striphtml(r_desc.group(1))
+            skip, priority = self.checkpriority(desc)
+            if skip:
+                continue
             r_tran = re.search('<div class="alcevirmen">(.+?)<\/div>', s, re.DOTALL)
             tran = striphtml(r_tran.group(1))
             r_rel = re.search('<div class="alrelease">(.+?)<\/div>', s, re.DOTALL)
@@ -88,6 +145,7 @@ class turkcealtyazi(sublib.service):
             namestr = "%s, %s, %s, %s" % (name, desc, rel, tran)
             sub = self.sub(namestr, iso)
             sub.download(link)
+            sub.priority = priority
             self.addsub(sub)
 
     def find(self, query):
@@ -100,15 +158,12 @@ class turkcealtyazi(sublib.service):
             self.scrapepage(page)
 
     def download(self, link):
-        print link
         paths = link.split("/")
         paths.insert(-1, "download-subtitle")
         link = "/".join(paths)
         remfile = self.request(link, None, None, domain, True)
         fname = remfile.info().getheader("Content-Disposition")
-        print fname
         fname = re.search('filename=(.*)', fname)
-        print fname
         fname = fname.group(1)
         fname = os.path.join(self.path, fname)
         with open(fname, "wb") as f:
