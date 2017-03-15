@@ -24,6 +24,15 @@ import os
 
 domain = "http://www.turkcealtyazi.org"
 
+quals = {
+         "1": 5,  # good quality
+         "2": 4,  # enough quality
+         "3": 0,  # bad quality
+         "4": 2,  # not rated yet
+         "5": 1,  # waiting for source
+         "6": 3,  # archived
+         }
+
 
 def norm(txt):
     txt = txt.replace(" ", "")
@@ -45,30 +54,38 @@ class turkcealtyazi(sublib.service):
         self.found = False
         if self.item.imdb:
             self.find(self.item.imdb)
-        if not self.num() and self.item.year:
+        if not self.num() and not self.item.show and self.item.year:
             self.find("%s %s" % (self.item.title, self.item.year))
+        self._subs = []
         if not self.num():
             self.find(self.item.title)
 
     def checkpriority(self, txt):
         # this is a very complicated and fuzzy string work
-        if self.item.episode < 0 or not self.item.show:
-            return False, 0
         txt = txt.lower().replace(" ", "")
+        cd = re.search("([0-9])cd", txt)
+        # less the number of cds higher the priority
+        if cd:
+            return False, - int(cd.group(1))
+        # rest is for episodes, if movie then return lowest prio.
+        if self.item.episode < 0 or not self.item.show:
+            return False, -100
         ispack = 0
         packmatch = 0
         epmatch = 0
         skip = False
-        sb = re.search("s(.+?)\|e(.+)", txt)
-        if sb:
-            e = sb.group(2)
-            s = sb.group(1)
+        se = re.search("s(.+?)\|e(.+)", txt)
+        if not se:
+            se = re.search("s(.+?)(paket)", txt)
+        if se:
+            e = se.group(2)
+            s = se.group(1)
             # verify season match first
             if s.isdigit() and self.item.season > 0 and \
                     not self.item.season == int(s):
                 return True, 0
             ismultiple = False
-            # B: 1,2,3,4 ...
+            # e: 1,2,3,4 ...
             for m in e.split(","):
                 if m.strip().isdigit():
                     ismultiple = True
@@ -82,7 +99,7 @@ class turkcealtyazi(sublib.service):
                     packmatch = 2
                 else:
                     skip = True
-            # B: 1~4
+            # e: 1~4
             if "~" in e:
                 startend = e.split("~")
                 # check if in range
@@ -96,37 +113,38 @@ class turkcealtyazi(sublib.service):
                         skip = True
                 else:
                     ispack = 1
-            # B:1 or B:01
+            # e: Paket meaning a package
+            if e == "paket":
+                ispack = 1
+            # e:1 or e:01
             if e.isdigit():
                 if int(e) == self.item.episode:
                     epmatch = 3
                 else:
                     skip = True
-        # B: Paket meaning a package
-        elif "paket" in txt:
-            ispack = 1
         return skip, ispack + epmatch + packmatch
 
     def scraperesults(self, page, query=None):
-        match = re.findall('<a href="(.+?)" title="(.+?)"><span style="font-size:15px"><strong>.+?<span style="font-size:15px">\(([0-9]{4})\)', page)
+        match = re.findall('<a href="(.+?)" title="(.+?)".*?><span style="font-size:15px"><strong>.+?<span style="font-size:15px">\(([0-9]{4})\)', page)
         for link, name, year in match:
             year = int(year)
             if norm(name) == norm(self.item.title) and \
-                (self.show or
+                (self.item.show or
                     (self.item.year is None or self.item.year == year)):
                 self.found = True
-                self.scrapepage(self.request(link))
+                self.scrapepage(self.request(domain + link))
+                break
         if query and not self.found:
             pages = re.findall('<a href="/find\.php.*?">([0-9]+?)</a>', page)
             if len(pages):
                 for p in range(2, int(pages[-1]) + 1):
                     if self.found:
                         break
-                    query["p": p]
+                    query["p"] = p
                     self.scraperesults(self.request(domain + "/find.php", query))
 
     def scrapepage(self, page):
-        subs = re.findall('<div class="altsonsez1(.+?)</div>\s+?</div>\s+?<div>', page, re.DOTALL)
+        subs = re.findall('<div class="altsonsez(.+?)</div>\s+?</div>\s+?<div>', page, re.DOTALL)
         for s in subs:
             r_name = re.search('<a itemprop="url" class="underline".+?href="(.+?)".+?<strong>(.+?)<\/strong>', s)
             link = r_name.group(1)
@@ -143,9 +161,12 @@ class turkcealtyazi(sublib.service):
             r_iso = re.search('<span class="flag([a-z]{2})">', s)
             iso = r_iso.group(1)
             namestr = "%s, %s, %s, %s" % (name, desc, rel, tran)
+            qual = re.search('<span class="kal([0-9])"', s)
             sub = self.sub(namestr, iso)
-            sub.download(link)
+            sub.download(domain + link)
             sub.priority = priority
+            if qual:
+                sub.rating = quals[qual.group(1)]
             self.addsub(sub)
 
     def find(self, query):
@@ -158,10 +179,19 @@ class turkcealtyazi(sublib.service):
             self.scrapepage(page)
 
     def download(self, link):
-        paths = link.split("/")
-        paths.insert(-1, "download-subtitle")
-        link = "/".join(paths)
-        remfile = self.request(link, None, None, domain, True)
+        page = self.request(link)
+        idid = re.search('<input type="hidden" name="idid" value="(.+?)"',
+                                                                        page)
+        alid = re.search('<input type="hidden" name="altid" value="(.+?)"',
+                                                                        page)
+        sdid = re.search('<input type="hidden" name="sidid" value="(.+?)"',
+                                                                        page)
+        data = {
+               "idid": idid.group(1),
+               "altid": alid.group(1),
+               "sidid": sdid.group(1)
+               }
+        remfile = self.request(domain + "/down.php", None, data, domain, True)
         fname = remfile.info().getheader("Content-Disposition")
         fname = re.search('filename=(.*)', fname)
         fname = fname.group(1)
