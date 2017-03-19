@@ -125,7 +125,9 @@ class turkcealtyazi(sublib.service):
         return skip, ispack + epmatch + packmatch
 
     def scraperesults(self, page, query=None):
-        match = re.findall('<a href="(.+?)" title="(.+?)".*?><span style="font-size:15px"><strong>.+?<span style="font-size:15px">\(([0-9]{4})\)', page)
+        regstr = '<a href="(.+?)" title="(.+?)".*?><span style="font-size:15px">'
+        regstr += '<strong>.+?<span style="font-size:15px">\(([0-9]{4})\)'
+        match = re.findall(regstr, page)
         for link, name, year in match:
             year = int(year)
             if norm(name) == norm(self.item.title) and \
@@ -146,7 +148,8 @@ class turkcealtyazi(sublib.service):
     def scrapepage(self, page):
         subs = re.findall('<div class="altsonsez(.+?)</div>\s+?</div>\s+?<div>', page, re.DOTALL)
         for s in subs:
-            r_name = re.search('<a itemprop="url" class="underline".+?href="(.+?)".+?<strong>(.+?)<\/strong>', s)
+            regstr = '<a itemprop="url" class="underline".+?href="(.+?)".+?<strong>(.+?)<\/strong>'
+            r_name = re.search(regstr, s)
             link = r_name.group(1)
             name = r_name.group(2)
             r_desc = re.search('<div class="alcd">(.+?)<\/div>', s, re.DOTALL)
