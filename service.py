@@ -18,6 +18,8 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 '''
 import sublib
+import htmlement
+import urlparse
 
 import re
 import os
@@ -46,6 +48,18 @@ def striphtml(txt):
     txt = re.sub("\n", "", txt)
     txt = txt.replace("  ", " ")
     return txt
+
+
+def elementsrc(element, exclude=[]):
+    if element is None:
+        return ""
+    if element in exclude:
+        return ""
+    text = element.text or ''
+    for subelement in element:
+        text += elementsrc(subelement, exclude)
+    text += element.tail or ''
+    return striphtml(text)
 
 
 class turkcealtyazi(sublib.service):
@@ -124,77 +138,106 @@ class turkcealtyazi(sublib.service):
                     skip = True
         return skip, ispack + epmatch + packmatch
 
-    def scraperesults(self, page, query=None):
-        regstr = '<a href="(.+?)" title="(.+?)".*?><span style="font-size:15px">'
-        regstr += '<strong>.+?<span style="font-size:15px">\(([0-9]{4})\)'
-        match = re.findall(regstr, page)
-        for link, name, year in match:
-            year = int(year)
+    def scraperesults(self, page, tree, query=None):
+        for row in tree.findall(".//div[@class='nblock']/div/div[2]"):
+            a = row.find(".//a")
+            if a is None:
+                continue
+            link = a.get("href")
+            name = a.get("title")
+            years = row.findall(".//span")
+            if len(years) > 1:
+                ryear = re.search("([0-9]{4})", years[1].text)
+                if ryear:
+                    year = int(ryear.group(1))
+            if len(years) <= 1 or not ryear:
+                year = "-1"
             if norm(name) == norm(self.item.title) and \
                 (self.item.show or
                     (self.item.year is None or self.item.year == year)):
                 self.found = True
-                self.scrapepage(self.request(domain + link))
+                p = self.request(domain + link)
+                e = htmlement.fromstring(p)
+                self.scrapepage(p, e)
                 break
         if query and not self.found:
-            pages = re.findall('<a href="/find\.php.*?">([0-9]+?)</a>', page)
-            if len(pages):
-                for p in range(2, int(pages[-1]) + 1):
+            pages = tree.findall(".//div[@class='pagin']/a")
+            for page in pages:
+                if "sonra" in page.text.lower():
                     if self.found:
                         break
-                    query["p"] = p
+                    query = dict(urlparse.parse_qsl(urlparse.urlparse(page.get("href")).query))
                     self.scraperesults(self.request(domain + "/find.php", query))
 
-    def scrapepage(self, page):
-        subs = re.findall('<div class="altsonsez(.+?)</div>\s+?</div>\s+?<div>', page, re.DOTALL)
+    def scrapepage(self, page, tree):
+        subs = tree.findall(".//div[@id='altyazilar']/div/div")
         for s in subs:
-            regstr = '<a itemprop="url" class="underline".+?href="(.+?)".+?<strong>(.+?)<\/strong>'
-            r_name = re.search(regstr, s)
-            link = r_name.group(1)
-            name = r_name.group(2)
-            r_desc = re.search('<div class="alcd">(.+?)<\/div>', s, re.DOTALL)
-            desc = striphtml(r_desc.group(1))
-            skip, priority = self.checkpriority(desc)
+            desc = s.find(".//div[@class='ripdiv']")
+            xname = s.find(".//div[@class='fl']/a")
+            alcd = s.find(".//div[@class='alcd']")
+            if xname is None:
+                continue
+            if alcd is None:
+                continue
+            if desc is None:
+                continue
+            alcd = elementsrc(alcd)
+            name = xname.get("title")
+            link = xname.get("href")
+            desc = elementsrc(desc)
+            skip, priority = self.checkpriority(alcd)
             if skip:
                 continue
-            r_tran = re.search('<div class="alcevirmen">(.+?)<\/div>', s, re.DOTALL)
-            tran = striphtml(r_tran.group(1))
-            r_rel = re.search('<div class="alrelease">(.+?)<\/div>', s, re.DOTALL)
-            rel = striphtml(r_rel.group(1))
-            r_iso = re.search('<span class="flag([a-z]{2})">', s)
-            iso = r_iso.group(1)
-            namestr = "%s, %s, %s, %s" % (name, desc, rel, tran)
-            qual = re.search('<span class="kal([0-9])"', s)
+            tran = elementsrc(tree.find(".//div[@class='alcevirmen']/a"))
+            iso = "tr"
+            qualrate = "4"
+            aldil = tree.find(".//div[@class='aldil']/span")
+            if aldil is not None:
+                cls = aldil.get("class")
+                riso = re.search('flag([a-z]{2})', cls)
+                if riso is not None:
+                    iso = riso.group(1)
+            qual = s.find(".//div[@class='fl']/span")
+            if qual is not None:
+                qual = qual.get("class")
+                if isinstance(qual, (str, unicode)):
+                    qual = qual.replace("kal", "")
+                    if qual.isdigit():
+                        qualrate = qual
+            namestr = "%s, %s, %s, %s" % (name, alcd, desc, tran)
             sub = self.sub(namestr, iso)
             sub.download(domain + link)
             sub.priority = priority
             if qual:
-                sub.rating = quals[qual.group(1)]
+                sub.rating = quals[qualrate]
             self.addsub(sub)
 
     def find(self, query):
         q = {"cat": "sub", "find": query}
         page = self.request(domain + "/find.php", q)
-        title = re.search("<title>(.*?)</title>", page)
-        if "arama" in title.group(1):
-            self.scraperesults(page, q)
+        tree = htmlement.fromstring(page)
+        title = tree.find(".//title")
+        if "arama" in title.text.lower():
+            self.scraperesults(page, tree, q)
         else:
-            self.scrapepage(page)
+            self.scrapepage(page, tree)
 
     def download(self, link):
         page = self.request(link)
-        idid = re.search('<input type="hidden" name="idid" value="(.+?)"',
-                                                                        page)
-        alid = re.search('<input type="hidden" name="altid" value="(.+?)"',
-                                                                        page)
-        sdid = re.search('<input type="hidden" name="sidid" value="(.+?)"',
-                                                                        page)
+        tree = htmlement.fromstring(page)
+        idid = tree.find(".//input[@name='idid']").get("value")
+        alid = tree.find(".//input[@name='altid']").get("value")
+        sdid = tree.find(".//input[@name='sidid']").get("value")
         data = {
-               "idid": idid.group(1),
-               "altid": alid.group(1),
-               "sidid": sdid.group(1)
+               "idid": idid,
+               "altid": alid,
+               "sidid": sdid
                }
-        remfile = self.request(domain + "/down.php", None, data, domain, True)
+        remfile = self.request(domain + "/ind", None,
+                               data,
+                               domain,
+                               True,
+                               )
         fname = remfile.info().getheader("Content-Disposition")
         fname = re.search('filename=(.*)', fname)
         fname = fname.group(1)
