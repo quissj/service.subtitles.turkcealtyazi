@@ -24,7 +24,7 @@ import urlparse
 import re
 import os
 
-domain = "http://www.turkcealtyazi.org"
+domain = "https://www.turkcealtyazi.org"
 
 quals = {
          "1": 5,  # good quality
@@ -35,6 +35,24 @@ quals = {
          "6": 3,  # archived
          }
 
+ripTypes = {
+    "rps r1": "HD",
+    "rps r2": "DVDRip",
+    "rps r3": "?r3",
+    "rps r4": "?r4",
+    "rps r5": "?r5",
+    "rps r6": "WEBRIP",
+    "rps r7": "BDRip",
+    "rps r8": "WEB-DL",
+    "rps r9": "HDRip",
+    ""      : "N/A"
+}
+
+tranTypes = {
+    "cps c1": "DVDRip",
+    "cps c2": "?c2",
+    "cps c3": "TVRip"
+}
 
 def norm(txt):
     txt = txt.replace(" ", "")
@@ -44,9 +62,10 @@ def norm(txt):
 
 def striphtml(txt):
     txt = re.sub("<.*?>", "", txt)
-    txt = re.sub("\t", "", txt)
+    txt = re.sub(r'\\t', "", txt)
     txt = re.sub("\n", "", txt)
-    txt = txt.replace("  ", " ")
+    txt = txt.strip()
+    #txt = txt.replace("  ", " ")
     return txt
 
 
@@ -182,16 +201,48 @@ class turkcealtyazi(sublib.service):
             if desc is None:
                 continue
             alcd = elementsrc(alcd)
-            name = xname.get("title")
+            name = xname.find(".//strong").text
             link = xname.get("href")
-            desc = elementsrc(desc)
+            ripType = desc.find(".//span")
+            if ripType is not None:
+                ripType = ripType.get("class")
+                if ripType in ripTypes:
+                    ripType = ripTypes[ripType]
+                else:
+                    ripType = "?"
+            else:
+                ripType = ""
+            desc = ripType + ' ' + elementsrc(desc)
             skip, priority = self.checkpriority(alcd)
             if skip:
                 continue
-            tran = elementsrc(tree.find(".//div[@class='alcevirmen']/a"))
+
+            alcevirmen = s.find(".//div[@class='alcevirmen']")
+            tran = ""
+            alcevirmenA = alcevirmen.findall(".//a")
+            alcevirmenSpan = alcevirmen.findall(".//span")
+            tranCount = len(alcevirmenSpan) + 1
+            if alcevirmenA:
+                for alc in alcevirmenA:
+                    strong = alc.find(".//strong")
+                    span = strong.find(".//span")
+                    if strong is not None:
+                        if strong.text is not None:
+                            tran += strong.text
+                        elif span is not None:
+                            tran += tranTypes[span.get("class")]
+                            tranCount -= 1
+                        tranCount -= 1
+                        if tranCount > 0:
+                            tran += ' & '
+            elif alcevirmenSpan:
+                tran = tranTypes[alcevirmenSpan[0].get("class")]
+            else:
+                tran = alcevirmen.text
+
             iso = "tr"
             qualrate = "4"
-            aldil = tree.find(".//div[@class='aldil']/span")
+            aldil = s.find(".//div[@class='aldil']/span")
             if aldil is not None:
                 cls = aldil.get("class")
                 riso = re.search('flag([a-z]{2})', cls)
@@ -204,7 +255,7 @@ class turkcealtyazi(sublib.service):
                     qual = qual.replace("kal", "")
                     if qual.isdigit():
                         qualrate = qual
-            namestr = "%s, %s, %s, %s" % (name, alcd, desc, tran)
+            namestr = "%s: %s, %s ~ %s" % (name, alcd, desc, tran)
             sub = self.sub(namestr, iso)
             sub.download(domain + link)
             sub.priority = priority
@@ -217,8 +268,11 @@ class turkcealtyazi(sublib.service):
         page = self.request(domain + "/find.php", q)
         tree = htmlement.fromstring(page)
         title = tree.find(".//title")
-        if "arama" in title.text.lower():
-            self.scraperesults(page, tree, q)
+        if title is not None:
+            if "arama" in title.text.lower():
+                self.scraperesults(page, tree, q)
+            else:
+                self.scrapepage(page, tree)
         else:
             self.scrapepage(page, tree)
 
